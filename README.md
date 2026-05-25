@@ -22,13 +22,13 @@
 
 | 항목 | 내용 |
 |---|---|
-| OS | Ubuntu 22.04 LTS |
+| OS | Ubuntu 24.04 LTS |
 | 실행 방식 | Docker Compose |
 | 컨테이너 이름 | agent-linux |
 | SSH 포트 | 20022/tcp |
 | App 포트 | 15034/tcp |
 | 앱 실행 파일 | agent-app |
-| 앱 배포 경로 | `/home/agent-admin/agent-app` |
+| 앱 배포 경로 | `/mission` |
 | 로그 경로 | `/var/log/agent-app` |
 
 ---
@@ -36,16 +36,15 @@
 ## 3. 프로젝트 파일 구조
 
 ```txt
-agent-mission/
+B1-1/
 ├── docker-compose.yml
 ├── README.md
-├── 수행내역서.md
-└── src/
+└── agent-app/
     ├── agent-app
     └── monitor.sh
 ```
 
-> 실제 컨테이너 내부에서는 `src` 디렉토리가 마운트된 위치에서 파일을 복사하여 사용한다.
+> 실제 컨테이너 내부에서는 `agent-app` 디렉토리가 마운트된 위치에서 파일을 복사하여 사용한다.
 
 ---
 
@@ -77,7 +76,7 @@ docker compose down
 
 ---
 
-## 5. docker-compose.yml 예시
+## 5. docker-compose.yml
 
 ```yaml
 services:
@@ -89,7 +88,7 @@ services:
       - "20022:20022"
       - "15034:15034"
     volumes:
-      - ./src:/mission/src
+      - ./agent-app:/mission
     command: sleep infinity
 ```
 
@@ -100,17 +99,7 @@ services:
 컨테이너 내부에서 다음 패키지를 설치한다.
 
 ```bash
-apt update && apt install -y \
-  sudo \
-  nano \
-  openssh-server \
-  ufw \
-  cron \
-  acl \
-  logrotate \
-  iproute2 \
-  procps \
-  bc
+apt update && apt install -y sudo nano openssh-server ufw cron acl logrotate iproute2 procps bc
 ```
 
 설치 목적은 다음과 같다.
