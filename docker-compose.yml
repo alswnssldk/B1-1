@@ -1,0 +1,11 @@
+services:
+ agent-linux:
+  image: ubuntu:24.04
+  container_name: agent-linux
+  privileged: true
+  ports:
+   - "20022:20022"
+   - "15034:15034"
+  volumes:
+   - ./agent-app:/mission/
+  command: sleep infinity
