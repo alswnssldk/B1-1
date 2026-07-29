@@ -1,0 +1,16 @@
+services:
+  agent-linux:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agent-mission:ubuntu22.04
+    container_name: agent-linux
+    privileged: true
+    ports:
+      - "20022:20022"
+      - "15034:15034"
+    volumes:
+      - ./:/mission:ro
+    tty: true
+    stdin_open: true
+    restart: unless-stopped
