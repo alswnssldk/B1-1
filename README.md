@@ -1,80 +1,310 @@
-# Linux Agent 운영 환경 구축 및 관제 자동화
+# Linux Agent 운영 환경 구축 및 모니터링
 
-Ubuntu 22.04 환경에 다중 사용자 권한 체계, SSH·방화벽 보안, 애플리케이션 실행 환경을 구성하고 Bash·cron·logrotate로 상태 관제와 로그 보존을 자동화한 프로젝트입니다.
+Ubuntu 22.04 컨테이너 한 대를 리눅스 운영 서버처럼 구성하고, 제공된 `agent-app`을 실행한 뒤 Bash 스크립트와 cron으로 상태를 점검하는 프로젝트입니다.
 
-> **검증 결과:** 자동 검증 `PASS=21, FAIL=0` · Boot Sequence 5단계 통과 · 정상 관제 로그 누적 · 프로세스 중단 시 `exit 1`
+계정과 그룹을 역할별로 분리하고, SSH·UFW·ACL·logrotate를 적용하여 애플리케이션 실행부터 모니터링 로그 관리까지 하나의 환경에서 동작하도록 구성했습니다.
 
-![전체 자동 검증 결과](docs/evidence/08-verify-all.png)
+## 전체 동작 구조
 
-## 프로젝트 목표
-
-단순히 리눅스 명령어를 실행하는 데 그치지 않고, 실제 서버 운영 흐름을 기준으로 다음 항목을 설계했습니다.
-
-- 역할별 계정·그룹과 ACL을 이용한 공유 영역/보안 영역 분리
-- SSH 진입 경로와 인바운드 포트를 최소화한 네트워크 보안
-- 일반 계정 기반 애플리케이션 실행과 환경 변수 표준화
-- 프로세스·포트 Health Check 및 CPU/MEM/DISK 관제
-- 장애와 경고를 분리한 종료 코드 정책
-- cron 기반 주기 실행과 logrotate 기반 로그 용량 관리
-
-## 요구사항 충족 현황
-
-| 평가 항목 | 구현 내용 | 검증 결과 |
-|---|---|---|
-| SSH 보안 | 포트 `20022`, `PermitRootLogin no` | [SSH 설정](#1-ssh-보안) |
-| 방화벽 | UFW 활성화, 기본 인바운드 차단, `20022/tcp`·`15034/tcp`만 허용 | [UFW 규칙](#2-ufw-방화벽) |
-| 계정·그룹 | `agent-admin/dev/test`, `agent-common/core` 구성 | [계정·그룹](#3-계정그룹과-최소-권한) |
-| 앱 실행 | `agent-admin`으로 실행, Boot Sequence 5단계 `[OK]`, `Agent READY` | [앱 기동](#4-애플리케이션-기동) |
-| Health Check | `agent-app` 프로세스와 TCP `15034` LISTEN 상태를 각각 검사 | [정상 관제](#5-관제로그cron) |
-| 장애 처리 | 프로세스 또는 포트 비정상 시 즉시 `exit 1` | [실패 검증](#7-비정상-상태-검증) |
-| 로그 누적 | 지정 포맷으로 `/var/log/agent-app/monitor.log`에 `>>` 누적 | [로그 누적](#5-관제로그cron) |
-| 자동 실행 | `agent-admin` crontab에서 `monitor.sh`를 매분 실행 | [cron 증가](#5-관제로그cron) |
-| 로그 용량 관리 | `size 10M`, `rotate 10`, 압축, `copytruncate` | [logrotate](#6-logrotate) |
-| 전체 자동 검증 | 계정·보안·권한·앱·포트·cron 등 21개 항목 검사 | `PASS=21`, `FAIL=0` |
-
-## 동작 구조
-
-```mermaid
-flowchart TD
-    A["Docker Compose<br/>Ubuntu 22.04"] --> B["setup.sh<br/>보안·계정·권한 구성"]
-    B --> C["agent-app<br/>agent-admin / TCP 15034"]
-    B --> D["cron<br/>매분 실행"]
-    C --> E["monitor.sh<br/>프로세스·포트·자원 확인"]
-    D --> E
-    E --> F["monitor.log<br/>지정 포맷 누적"]
-    F --> G["logrotate<br/>10MB · 10개"]
+```text
+호스트 PC
+   │
+   ├─ Docker Compose
+   │      └─ Ubuntu 22.04 컨테이너 생성
+   │
+   ├─ localhost:20022 ── SSH 관리 접속
+   └─ localhost:15034 ── agent-app 서비스 접속
+                              │
+                              ▼
+                    Ubuntu 컨테이너 1개
+                    ├─ SSH 서버
+                    ├─ UFW 방화벽
+                    ├─ agent-app
+                    ├─ monitor.sh
+                    ├─ cron
+                    └─ logrotate
 ```
+
+프로젝트의 실행 흐름은 다음과 같습니다.
+
+```text
+Dockerfile
+   ↓
+필요 패키지가 설치된 Ubuntu 이미지 생성
+   ↓
+docker-compose.yml
+   ↓
+포트와 볼륨을 연결하여 컨테이너 실행
+   ↓
+setup.sh
+   ↓
+계정·권한·SSH·UFW·cron·logrotate 구성
+   ↓
+start-agent.sh
+   ↓
+agent-app 실행 및 15034 포트 LISTEN
+   ↓
+monitor.sh
+   ↓
+프로세스·포트·방화벽·자원 사용률 확인
+   ↓
+monitor.log 누적 기록
+```
+
+## 주요 구성
+
+- SSH 관리 포트: `20022/tcp`
+- 애플리케이션 포트: `15034/tcp`
+- Root SSH 로그인 차단
+- UFW 기본 인바운드 차단
+- 운영·개발·테스트 계정 분리
+- 그룹 및 ACL 기반 디렉토리 접근 제어
+- CPU 아키텍처에 맞는 실행 파일 자동 선택
+- 프로세스와 포트 상태 점검
+- CPU·메모리·디스크 사용률 수집
+- cron을 이용한 매분 모니터링
+- logrotate를 이용한 로그 용량 관리
 
 ## 저장소 구조
 
 ```text
 .
+├── Dockerfile
+├── docker-compose.yml
+├── README.md
+├── TODO.md
+├── 수행내역서.md
 ├── agent-app/
 │   ├── agent-app-linux-x86
 │   └── agent-app-linux-arm64
 ├── config/
 │   └── agent-app.logrotate
-├── docs/
-│   └── evidence/                  # 수행 검증 이미지
 ├── scripts/
 │   ├── container-entrypoint.sh
-│   ├── setup.sh                   # 계정·권한·SSH·UFW·cron 일괄 구성
+│   ├── setup.sh
 │   ├── start-agent.sh
 │   ├── start-agent-background.sh
 │   ├── stop-agent.sh
 │   ├── test-monitor-failure.sh
-│   └── verify.sh                  # 요구사항 자동 검증
-├── src/
-│   ├── monitor.sh                 # Health Check와 자원 관제
-│   └── report.sh                  # 누적 로그 통계(보너스)
-├── Dockerfile
-├── docker-compose.yml
-└── README.md
+│   └── verify.sh
+└── src/
+    └── monitor.sh
 ```
+
+## 파일별 역할
+
+### `Dockerfile`
+
+Ubuntu 22.04를 기반으로 프로젝트 실행에 필요한 패키지를 설치합니다.
+
+주요 설치 항목:
+
+- `openssh-server`: SSH 접속
+- `ufw`: 방화벽 설정
+- `cron`: 주기적 모니터링 실행
+- `acl`: 사용자·그룹별 세부 권한 관리
+- `logrotate`: 로그 회전 및 보관
+- `sudo`, `procps`, `iproute2`: 권한 전환과 프로세스·포트 확인
+
+### `docker-compose.yml`
+
+Dockerfile로 만든 이미지를 실제 컨테이너로 실행합니다.
+
+담당 항목:
+
+- 컨테이너 이름 지정
+- 호스트와 컨테이너 포트 연결
+- 프로젝트 디렉토리를 `/mission`에 읽기 전용 마운트
+- UFW 사용을 위한 `privileged` 권한
+- 컨테이너 재시작 정책
+
+### `config/agent-app.logrotate`
+
+`monitor.log`의 크기가 계속 증가하지 않도록 회전 정책을 설정합니다.
+
+- 로그 크기 `10M` 이상에서 회전
+- 이전 로그 최대 10개 보관
+- 오래된 로그 압축
+- 실행 중에도 같은 로그 경로를 계속 사용할 수 있도록 `copytruncate` 적용
+
+## `scripts` 디렉토리
+
+### `container-entrypoint.sh`
+
+컨테이너가 시작될 때 가장 먼저 실행됩니다.
+
+주요 동작:
+
+- `service cron start`로 cron 시작
+- `trap`으로 종료 신호 처리
+- 종료 시 SSH와 cron 정리
+- `while`, `sleep`, `wait`를 사용하여 컨테이너 유지
+
+이 스크립트는 애플리케이션을 직접 실행하지 않고, 컨테이너가 종료되지 않도록 기본 실행 상태를 유지합니다.
+
+### `setup.sh`
+
+컨테이너 내부의 운영 환경을 한 번에 구성하는 초기화 스크립트입니다.
+
+주요 동작:
+
+1. `groupadd`로 `agent-common`, `agent-core` 그룹 생성
+2. `useradd`로 `agent-admin`, `agent-dev`, `agent-test` 계정 생성
+3. `usermod -aG`로 역할에 맞는 그룹 배치
+4. `install -d`로 디렉토리와 기본 권한 생성
+5. `setfacl`로 현재 ACL과 기본 ACL 적용
+6. `uname -m`, `case`로 CPU 아키텍처 확인
+7. x86 또는 ARM용 `agent-app` 선택 및 설치
+8. `monitor.sh`를 운영 경로에 복사
+9. API 키와 로그 파일 생성
+10. SSH 포트와 Root 로그인 정책 설정
+11. UFW 기본 정책 및 허용 포트 설정
+12. agent-admin crontab에 `monitor.sh` 등록
+13. SSH와 cron 서비스 재시작
+
+`set -euo pipefail`을 사용하여 명령 실패, 정의되지 않은 변수, 파이프라인 오류가 발생하면 설정을 중단합니다.
+
+### `start-agent.sh`
+
+환경 변수를 지정하고 `agent-app`을 포그라운드로 실행합니다.
+
+내부 함수:
+
+- `run_agent()`: `env`로 실행 환경을 전달하고 `exec`로 애플리케이션 실행
+
+주요 동작:
+
+- `pgrep`로 중복 실행 방지
+- Root로 실행하면 `runuser`로 `agent-admin` 계정 전환
+- `agent-admin`이 아닌 일반 계정의 직접 실행 차단
+- `AGENT_HOME`, `AGENT_PORT`, 업로드·키·로그 경로 전달
+- `exec`를 사용하여 셸 프로세스를 애플리케이션 프로세스로 교체
+
+포그라운드 실행이므로 애플리케이션의 Boot Sequence를 터미널에서 바로 확인할 수 있습니다.
+
+### `start-agent-background.sh`
+
+`agent-app`을 백그라운드에서 실행합니다.
+
+주요 동작:
+
+- `pgrep`로 기존 프로세스 확인
+- `nohup`과 `&`를 사용한 백그라운드 실행
+- 표준 출력과 오류를 `agent-app.log`에 누적
+- 실행 후 다시 `pgrep`하여 시작 성공 여부 확인
+
+### `stop-agent.sh`
+
+실행 중인 애플리케이션을 종료합니다.
+
+주요 동작:
+
+- `pkill -u agent-admin -x agent-app`으로 대상 프로세스만 종료
+- 프로세스가 없으면 오류 대신 현재 상태 안내
+
+사용자와 프로세스 이름을 함께 제한하여 다른 프로세스를 잘못 종료하지 않도록 구성했습니다.
+
+### `test-monitor-failure.sh`
+
+애플리케이션이 중지된 상태에서 `monitor.sh`의 장애 감지 동작을 확인합니다.
+
+주요 동작:
+
+- `pgrep`로 애플리케이션 중지 상태 확인
+- `set +e`로 실패 종료 코드를 직접 수집
+- `runuser`로 `agent-admin` 권한에서 모니터 실행
+- `$?`로 종료 코드 저장
+- 모니터가 `1`을 반환했는지 확인
+
+### `verify.sh`
+
+계정, 보안 설정, 파일 권한, 서비스 상태를 한 번에 확인하는 읽기 전용 검증 스크립트입니다.
+
+내부 함수:
+
+- `ok()`: 성공 메시지 출력 및 성공 개수 증가
+- `no()`: 실패 메시지 출력 및 실패 개수 증가
+- `check()`: 검사 명령을 실행한 뒤 `ok()` 또는 `no()` 호출
+
+주요 확인 항목:
+
+- 사용자와 그룹 존재 여부
+- 계정별 그룹 소속
+- SSH 포트와 Root 로그인 정책
+- SSH 실제 LISTEN 상태
+- UFW 활성화와 허용 포트
+- `monitor.sh` 소유자·그룹·권한
+- 키 파일과 logrotate 설정 존재 여부
+- cron 등록 여부
+- 애플리케이션 프로세스와 15034 포트 상태
+
+마지막에 성공과 실패 개수를 요약하고, 실패 항목이 있으면 비정상 종료합니다.
+
+## `src/monitor.sh`
+
+애플리케이션과 시스템 상태를 확인하고 결과를 로그에 기록하는 핵심 모니터링 스크립트입니다.
+
+내부 함수:
+
+- `warn()`: 경고 메시지 출력 및 경고 개수 증가
+- `fail()`: 장애 메시지를 출력하고 `exit 1`
+- `is_greater_than()`: 측정값이 임계값보다 큰지 비교
+- `read_cpu_snapshot()`: `/proc/stat`에서 CPU 누적값 읽기
+- `get_cpu_usage()`: 두 CPU 스냅샷의 차이로 사용률 계산
+- `get_memory_usage()`: `/proc/meminfo`로 메모리 사용률 계산
+- `get_disk_usage()`: `df -P /`로 루트 디스크 사용률 확인
+
+모니터링 순서:
+
+1. `pgrep`로 `agent-admin`의 `agent-app` 프로세스 확인
+2. `ss`로 TCP 15034 포트 LISTEN 확인
+3. 최소 sudo 권한으로 UFW 상태 확인
+4. 로그 디렉토리 존재 여부와 쓰기 권한 확인
+5. CPU·메모리·디스크 사용률 수집
+6. 설정된 임계값과 비교
+7. 한 줄 형식으로 `monitor.log`에 누적 기록
+
+프로세스나 포트가 정상적이지 않으면 서비스 장애로 판단하여 `exit 1`을 반환합니다. 자원 임계값 초과와 UFW 상태 문제는 경고로 기록하되 측정 로그는 계속 남깁니다.
+
+로그 형식:
+
+```text
+[YYYY-MM-DD HH:MM:SS] PID:값 CPU:값% MEM:값% DISK_USED:값%
+```
+
+## 계정 및 권한 구조
+
+| 계정 | 소속 그룹 | 역할 |
+|---|---|---|
+| `agent-admin` | `agent-common`, `agent-core` | 앱 실행, cron 모니터링 |
+| `agent-dev` | `agent-common`, `agent-core` | 모니터 스크립트 관리 |
+| `agent-test` | `agent-common` | 업로드 영역 테스트 |
+
+| 경로 | 소유자:그룹 | 권한 | 접근 목적 |
+|---|---|---:|---|
+| `upload_files` | `agent-admin:agent-common` | `2770` | 세 계정이 함께 사용하는 업로드 영역 |
+| `api_keys` | `agent-admin:agent-core` | `2770` | 운영·개발 계정만 접근하는 키 영역 |
+| `/var/log/agent-app` | `agent-admin:agent-core` | `2770` | 운영 로그 저장 영역 |
+| `agent-app` | `agent-admin:agent-core` | `750` | 운영 계정의 애플리케이션 실행 |
+| `monitor.sh` | `agent-dev:agent-core` | `750` | 개발 계정 소유, 운영 계정 실행 |
+
+디렉토리 권한의 `2`는 setgid 비트입니다. 하위에 생성되는 파일과 디렉토리가 상위 디렉토리의 그룹을 유지하도록 합니다. 기본 ACL도 함께 적용하여 새 파일에서도 접근 정책이 이어지도록 했습니다.
+
+## 애플리케이션 환경 변수
+
+| 변수 | 값 | 용도 |
+|---|---|---|
+| `AGENT_HOME` | `/home/agent-admin/agent-app` | 애플리케이션 기준 경로 |
+| `AGENT_PORT` | `15034` | 서비스 리슨 포트 |
+| `AGENT_UPLOAD_DIR` | `/home/agent-admin/agent-app/upload_files` | 업로드 파일 경로 |
+| `AGENT_KEY_PATH` | `/home/agent-admin/agent-app/api_keys` | 키 파일이 위치한 디렉토리 |
+| `AGENT_LOG_DIR` | `/var/log/agent-app` | 애플리케이션 및 모니터 로그 경로 |
+
+제공된 실행 파일은 `AGENT_KEY_PATH`에 키 파일 자체가 아니라 `secret.key`가 들어 있는 디렉토리 경로를 사용합니다. 호환성을 위해 `setup.sh`는 `secret.key`와 `t_secret.key`를 같은 값으로 생성합니다.
 
 ## 실행 방법
 
-### 1. 컨테이너 실행
+### 1. 이미지 빌드 및 컨테이너 실행
 
 ```bash
 docker compose up -d --build
@@ -83,241 +313,59 @@ docker exec -it agent-linux bash
 
 ### 2. 운영 환경 구성
 
-컨테이너 내부에서 root로 실행합니다.
-
 ```bash
 bash /mission/scripts/setup.sh
 ```
 
-`setup.sh`는 계정·그룹 생성, 디렉토리·ACL 적용, CPU 아키텍처별 바이너리 설치, 키·로그 파일 생성, SSH·UFW·logrotate·cron 구성을 순서대로 수행합니다.
+SSH 비밀번호 접속을 사용할 경우:
 
-### 3. 앱 실행
+```bash
+passwd agent-admin
+```
 
-Boot Sequence를 직접 확인하려면 포그라운드로 실행합니다.
+### 3. 애플리케이션 실행
+
+포그라운드 실행:
 
 ```bash
 bash /mission/scripts/start-agent.sh
 ```
 
-검증을 계속하려면 `Ctrl+C`로 종료한 뒤 백그라운드로 실행합니다.
+백그라운드 실행:
 
 ```bash
 bash /mission/scripts/start-agent-background.sh
 ```
 
-### 4. 관제 및 전체 검증
+### 4. 모니터링 실행
 
 ```bash
 sudo -u agent-admin /home/agent-admin/agent-app/bin/monitor.sh
-echo "monitor_exit=$?"
+echo $?
+tail -n 5 /var/log/agent-app/monitor.log
+```
 
+### 5. 전체 상태 확인
+
+```bash
 bash /mission/scripts/verify.sh
 ```
 
-정상 상태에서 `monitor.sh`는 `exit 0`, `verify.sh`는 `PASS=21 FAIL=0`을 반환합니다.
-
-### 5. 실패 상태 검증
+### 6. 애플리케이션 종료 및 재시작
 
 ```bash
 bash /mission/scripts/stop-agent.sh
-bash /mission/scripts/test-monitor-failure.sh
+bash /mission/scripts/start-agent-background.sh
 ```
 
-테스트 스크립트는 중단된 프로세스에 대해 `monitor.sh`가 `exit 1`을 반환하는지 확인합니다.
+## 로그 관리
 
-## 설계 및 구현
-
-### 계정·그룹과 최소 권한
-
-| 대상 | 소유자:그룹 | 권한 | 접근 정책 |
-|---|---|---:|---|
-| `upload_files` | `agent-admin:agent-common` | `2770` | admin/dev/test 읽기·쓰기 |
-| `api_keys` | `agent-admin:agent-core` | `2770` | admin/dev만 읽기·쓰기 |
-| `/var/log/agent-app` | `agent-admin:agent-core` | `2770` | admin/dev만 읽기·쓰기 |
-| `agent-app` | `agent-admin:agent-core` | `750` | 운영 계정 실행 |
-| `monitor.sh` | `agent-dev:agent-core` | `750` | dev 소유, admin이 cron으로 실행 |
-
-`agent-test`에는 파일 업로드에 필요한 `agent-common` 권한만 부여하고, API 키와 운영 로그에 접근할 수 있는 `agent-core`에서는 제외했습니다. 디렉토리에는 setgid와 기본 ACL을 적용해 새 파일도 상위 디렉토리의 협업 그룹과 권한 정책을 상속합니다.
-
-### 애플리케이션 실행 환경
-
-| 환경 변수 | 값 |
-|---|---|
-| `AGENT_HOME` | `/home/agent-admin/agent-app` |
-| `AGENT_PORT` | `15034` |
-| `AGENT_UPLOAD_DIR` | `/home/agent-admin/agent-app/upload_files` |
-| `AGENT_KEY_PATH` | `/home/agent-admin/agent-app/api_keys` |
-| `AGENT_LOG_DIR` | `/var/log/agent-app` |
-
-제공된 바이너리를 직접 검증한 결과, 미션 문서의 `t_secret.key` 파일 경로와 달리 실행 파일은 `AGENT_KEY_PATH`에 디렉토리를 요구하고 내부의 `secret.key`를 읽었습니다. 문서 요구와 실제 실행 조건을 모두 만족하도록 동일한 테스트 값의 `t_secret.key`와 `secret.key`를 생성했습니다.
-
-앱은 root가 아닌 `agent-admin`으로 실행합니다. 실행 경로와 포트를 환경 변수로 고정해 포그라운드 실행, 백그라운드 실행, cron처럼 호출 환경이 달라도 동일한 구성을 사용하도록 했습니다.
-
-### `monitor.sh` Health Check
-
-#### 프로세스 확인
-
-```bash
-pgrep -o -u agent-admin -x agent-app
-```
-
-- `pgrep`는 `ps | grep`보다 PID 검색 목적이 명확하고 grep 프로세스가 결과에 섞이지 않습니다.
-- `-u`로 실행 계정을 제한하고 `-x`로 프로세스 이름 전체가 일치할 때만 통과시킵니다.
-- 패키징된 앱에서 PID가 복수로 나타날 수 있어 `-o`로 가장 오래된 대표 PID를 기록합니다.
-
-#### 포트 확인
-
-```bash
-ss -ltnH
-```
-
-프로세스가 존재해도 포트 바인딩에 실패할 수 있으므로 실제 TCP LISTEN 소켓을 별도로 검사합니다. `ss`는 현재 리눅스에서 기본적으로 제공되며, 구형 `net-tools`의 `netstat`에 의존하지 않습니다.
-
-#### 자원 수집
-
-| 지표 | 수집 방식 | 경고 임계값 |
-|---|---|---:|
-| CPU | `/proc/stat`을 1초 간격으로 두 번 읽고 전체/idle 변화량 계산 | `> 20%` |
-| MEM | `/proc/meminfo`의 `MemTotal`·`MemAvailable`로 사용률 계산 | `> 10%` |
-| DISK | `df -P /`에서 루트 파티션 Used `%` 추출 | `> 80%` |
-
-로그는 사람이 `tail`로 읽기 쉽고 `awk`로도 안정적으로 파싱할 수 있도록 한 줄의 고정된 `KEY:VALUE` 형식으로 기록합니다.
+주요 로그 경로:
 
 ```text
-[YYYY-MM-DD HH:MM:SS] PID:... CPU:..% MEM:..% DISK_USED:..%
+/var/log/agent-app/agent-app.log
+/var/log/agent-app/monitor.log
+/var/log/agent-app/cron.log
 ```
 
-#### 종료 정책
-
-- 앱 프로세스 또는 포트 비정상: 서비스를 제공할 수 없는 상태이므로 `exit 1`
-- UFW 비활성·조회 실패 또는 자원 임계값 초과: 관측 가능한 이상 징후이므로 `[WARNING]` 출력 후 로그를 남기고 `exit 0`
-
-이렇게 장애와 경고를 분리하면 일시적인 자원 상승으로 모니터링 작업 자체가 중단되는 것을 막으면서, 실제 서비스 불가 상태는 상위 자동화가 실패로 인식할 수 있습니다.
-
-### 로그 누적과 보존
-
-`monitor.sh`는 다음과 같이 `>>`로 로그를 추가합니다.
-
-```bash
-printf '%s\n' "$LOG_LINE" >> "$LOG_FILE"
-```
-
-`>`는 파일을 매번 덮어쓰지만 `>>`는 기존 로그 뒤에 새 기록을 추가합니다. 장애 전후의 변화와 반복 패턴을 추적하려면 시계열 기록이 보존되어야 하므로 누적 리다이렉션이 필요합니다.
-
-`agent-admin`의 crontab은 매분 관제를 실행합니다.
-
-```cron
-* * * * * /home/agent-admin/agent-app/bin/monitor.sh >> /var/log/agent-app/cron.log 2>&1
-```
-
-`monitor.log`는 logrotate로 10MB를 넘을 때 회전하고 이전 파일 10개를 유지합니다. 오래된 파일은 압축하며, 실행 중인 프로세스가 같은 파일 디스크립터를 계속 사용해도 기록이 끊기지 않도록 `copytruncate`를 적용했습니다.
-
-## 수행 검증
-
-### 1. SSH 보안
-
-유효 설정에서 SSH 포트 `20022`와 Root 원격 로그인 차단을 확인했습니다.
-
-![SSH 20022 및 Root 로그인 차단](docs/evidence/03-ssh-security.png)
-
-### 2. UFW 방화벽
-
-UFW가 `active`이고 기본 인바운드는 차단되며, IPv4/IPv6 모두 `20022/tcp`와 `15034/tcp`만 허용됩니다.
-
-![UFW 허용 포트](docs/evidence/04-ufw-rules.png)
-
-### 3. 계정·그룹과 최소 권한
-
-`agent-admin`은 `agent-common`·`agent-core`에 포함되고, `agent-test`는 `agent-common`에만 포함되어 보안 그룹에서 제외됩니다.
-
-![agent-admin 그룹](docs/evidence/05-agent-admin-groups.png)
-
-![agent-test 그룹](docs/evidence/06-agent-test-groups.png)
-
-### 4. 애플리케이션 기동
-
-Boot Sequence 5단계가 모두 `[OK]`를 통과하고 `Agent READY`, TCP `15034` 리슨을 확인했습니다.
-
-![Agent Boot Sequence](docs/evidence/07-agent-boot.png)
-
-### 5. 관제·로그·cron
-
-프로세스, TCP `15034`, UFW 상태가 모두 정상이며 CPU/MEM/DISK 값을 수집해 지정 포맷으로 누적했습니다.
-
-![monitor.sh 정상 실행과 누적 로그](docs/evidence/09-monitor-normal.png)
-
-cron 등록 후 `monitor.log` 라인 수가 `63`에서 `64`로 증가해 매분 자동 실행을 확인했습니다.
-
-![cron 등록과 로그 증가](docs/evidence/10-cron-log-growth.png)
-
-### 6. logrotate
-
-`monitor.log`에 `size 10M`, `rotate 10`, 압축, `copytruncate`, 소유자·그룹 정책을 적용했습니다.
-
-![logrotate 정책](docs/evidence/11-logrotate-policy.png)
-
-### 7. 비정상 상태 검증
-
-앱 중단 상태에서 `monitor.sh`가 프로세스 비정상을 감지하고 `exit 1`로 종료됨을 확인했습니다.
-
-![프로세스 중단 시 exit 1](docs/evidence/12-monitor-exit1.png)
-
-### 8. 환경 구성 자동화
-
-Docker Compose 빌드·실행과 `setup.sh` 9단계 구성을 완료했습니다.
-
-<details>
-<summary>Docker Compose 빌드 결과</summary>
-
-![Docker Compose 빌드](docs/evidence/01-docker-build.png)
-
-</details>
-
-<details>
-<summary>setup.sh 실행 결과</summary>
-
-![setup.sh 완료](docs/evidence/02-setup-complete.png)
-
-</details>
-
-## 운영 관점의 판단
-
-### SSH 포트 변경과 Root 로그인 차단
-
-SSH 포트 변경은 기본 22번 포트를 대상으로 하는 자동 스캔과 무차별 대입 시도를 줄이는 보조 통제입니다. 이것만으로 인증 보안이 완성되지는 않지만 불필요한 노출과 로그 잡음을 줄일 수 있습니다. Root 원격 로그인을 차단하면 최고 권한 계정으로 직접 인증하는 경로를 제거할 수 있으며, 일반 계정 로그인 후 필요한 명령만 `sudo`로 실행해 최소 권한과 사용자별 추적성을 확보할 수 있습니다.
-
-### 웹 서버로 관제 대상을 변경한다면
-
-| 변경 지점 | 예시 |
-|---|---|
-| 프로세스 | `agent-app` 대신 `nginx`; master/worker 중 감시 대상을 정하고 `systemctl is-active nginx` 또는 사용자 조건을 포함한 `pgrep` 사용 |
-| 포트 | `15034` 대신 실제 서비스 포트 `80/443` 검사 |
-| 로그 | `/var/log/nginx/access.log`, `error.log`의 권한·용량·최근 오류를 확인 |
-| 임계값 | 서버 사양과 정상 트래픽 기준으로 CPU/MEM/DISK 임계값 재설정 |
-| 실행 계정 | nginx의 master/worker 실행 계정과 로그 그룹에 맞춰 최소 권한 재설계 |
-
-### 프로세스는 살아 있지만 포트가 열리지 않는다면
-
-1. `ss -ltnp`로 실제 LISTEN 여부와 포트 충돌을 확인합니다.
-2. 애플리케이션 로그에서 바인딩 실패, 권한 오류, 설정 파싱 오류를 확인합니다.
-3. 실행 인자와 환경 변수의 포트·바인드 주소가 기대값과 일치하는지 확인합니다.
-4. `0.0.0.0`이 아닌 `127.0.0.1`에만 바인딩됐는지 확인합니다.
-5. LISTEN은 정상이지만 외부 접속만 실패한다면 UFW, Docker 포트 매핑, 라우팅 순서로 확인합니다.
-
-### 로그 증가로 디스크가 가득 찰 위험이 있다면
-
-- 단기: `df -h`, `df -i`, `du`로 용량·inode·증가 원인을 확인하고 logrotate를 실행해 서비스 공간을 확보합니다.
-- 중기: 회전 크기, 보존 개수, 압축 정책을 실제 로그 증가율에 맞게 조정합니다.
-- 장기: 중앙 로그 저장소 전송, 보존 기간 정책, 디스크 임계값 알림을 적용해 로컬 디스크 의존도를 낮춥니다.
-
-## 보너스: 누적 로그 통계
-
-`report.sh`는 `monitor.log`를 파싱해 CPU/MEM/DISK의 평균·최대·최소와 전체 샘플 수를 출력합니다.
-
-```bash
-sudo -u agent-admin /home/agent-admin/agent-app/bin/report.sh
-```
-
-## 실습 환경 주의사항
-
-이 저장소는 UFW와 SSH를 컨테이너 안에서 함께 검증하기 위해 Docker Compose의 `privileged: true`를 사용합니다. 이는 과제 재현용 구성입니다. 실제 운영 환경에서는 privileged 컨테이너를 피하고, 호스트·클라우드 방화벽과 컨테이너 권한을 별도로 최소화해야 합니다. 또한 실서비스 SSH는 공개키 인증을 적용하고 비밀번호 인증을 비활성화하는 구성이 권장됩니다.
+`monitor.sh`는 `>>` 연산자로 기존 로그 뒤에 결과를 추가합니다. cron은 매분 모니터를 실행하며, 별도의 cron 항목이 5분마다 logrotate 정책을 확인합니다.
