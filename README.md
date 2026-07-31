@@ -81,19 +81,18 @@ monitor.log 누적 기록
 │   └── agent-app.logrotate
 ├── docs/
 │   └── evidence/
-│       ├── docker-build.png
-│       ├── setup.png
-│       ├── agent-admin.png
-│       ├── agent-dev.png
-│       ├── agent-test.png
-│       ├── ssh-port.png
-│       ├── ufw-setting.png
-│       ├── start-agent.png
-│       ├── background-verify.png
-│       ├── monitor.png
-│       ├── cron.png
-│       ├── stop-monitor.png
-│       └── logrotate.png
+│       ├── 01-docker-build.png
+│       ├── 02-setup-complete.png
+│       ├── 03-ssh-security.png
+│       ├── 04-ufw-rules.png
+│       ├── 05-agent-admin-groups.png
+│       ├── 06-agent-test-groups.png
+│       ├── 07-agent-boot.png
+│       ├── 08-verify-all.png
+│       ├── 09-monitor-normal.png
+│       ├── 10-cron-log-growth.png
+│       ├── 11-logrotate-policy.png
+│       └── 12-monitor-exit1.png
 ├── scripts/
 │   ├── container-entrypoint.sh
 │   ├── setup.sh
@@ -125,7 +124,7 @@ Ubuntu 22.04를 기반으로 프로젝트 실행에 필요한 패키지를 설�
 
 Dockerfile을 기준으로 Ubuntu 22.04 이미지가 빌드되고, Compose를 통해 `agent-linux` 컨테이너가 생성된 결과입니다.
 
-![Docker 이미지 빌드 및 컨테이너 생성](docs/evidence/docker-build.png)
+![Docker 이미지 빌드 및 컨테이너 생성](docs/evidence/01-docker-build.png)
 
 ### `docker-compose.yml`
 
@@ -189,7 +188,7 @@ Dockerfile로 만든 이미지를 실제 컨테이너로 실행합니다.
 
 계정·그룹·디렉토리·키·로그·SSH·UFW·cron 설정이 순서대로 완료된 결과입니다.
 
-![setup.sh 실행 결과](docs/evidence/setup.png)
+![setup.sh 실행 결과](docs/evidence/02-setup-complete.png)
 
 ### `start-agent.sh`
 
@@ -213,7 +212,7 @@ Dockerfile로 만든 이미지를 실제 컨테이너로 실행합니다.
 
 실행 계정, 환경 변수, 키, 포트, 로그 디렉토리 검사를 모두 통과한 뒤 `Agent READY` 상태로 진입한 결과입니다.
 
-![agent-app Boot Sequence 및 Agent READY](docs/evidence/start-agent.png)
+![agent-app Boot Sequence 및 Agent READY](docs/evidence/07-agent-boot.png)
 
 ### `start-agent-background.sh`
 
@@ -277,7 +276,7 @@ Dockerfile로 만든 이미지를 실제 컨테이너로 실행합니다.
 
 애플리케이션을 백그라운드로 실행한 뒤 계정·SSH·UFW·파일 권한·cron·프로세스·포트 상태를 검사한 결과입니다.
 
-![백그라운드 실행 및 verify.sh 검증 결과](docs/evidence/background-verify.png)
+![백그라운드 실행 및 verify.sh 검증 결과](docs/evidence/08-verify-all.png)
 
 ## `src/monitor.sh`
 
@@ -315,13 +314,13 @@ Dockerfile로 만든 이미지를 실제 컨테이너로 실행합니다.
 
 프로세스·포트·UFW 상태를 확인하고 CPU·메모리·디스크 사용률을 수집하여 `monitor.log`에 누적한 결과입니다.
 
-![monitor.sh 정상 실행 및 로그 누적](docs/evidence/monitor.png)
+![monitor.sh 정상 실행 및 로그 누적](docs/evidence/09-monitor-normal.png)
 
 ### 장애 감지 결과
 
 `agent-app`을 중지한 상태에서 모니터를 실행하여 프로세스 장애를 감지하고 종료 코드 `1`을 반환한 결과입니다.
 
-![agent-app 중지 후 monitor.sh 장애 감지](docs/evidence/stop-monitor.png)
+![agent-app 중지 후 monitor.sh 장애 감지](docs/evidence/12-monitor-exit1.png)
 
 ## 계정 및 권한 구조
 
@@ -343,9 +342,9 @@ Dockerfile로 만든 이미지를 실제 컨테이너로 실행합니다.
 
 ### 계정별 그룹 구성 결과
 
-| `agent-admin` | `agent-dev` | `agent-test` |
-|---|---|---|
-| ![agent-admin 그룹 구성](docs/evidence/agent-admin.png) | ![agent-dev 그룹 구성](docs/evidence/agent-dev.png) | ![agent-test 그룹 구성](docs/evidence/agent-test.png) |
+| `agent-admin` | `agent-test` |
+|---|---|
+| ![agent-admin 그룹 구성](docs/evidence/05-agent-admin-groups.png) | ![agent-test 그룹 구성](docs/evidence/06-agent-test-groups.png) |
 
 `agent-admin`과 `agent-dev`는 `agent-core`에 포함되며, `agent-test`는 공용 업로드 영역에 필요한 `agent-common`에만 포함됩니다.
 
@@ -353,7 +352,7 @@ Dockerfile로 만든 이미지를 실제 컨테이너로 실행합니다.
 
 | SSH 설정 | UFW 설정 |
 |---|---|
-| ![SSH 20022 포트와 Root 로그인 차단](docs/evidence/ssh-port.png) | ![UFW 20022 및 15034 허용](docs/evidence/ufw-setting.png) |
+| ![SSH 20022 포트와 Root 로그인 차단](docs/evidence/03-ssh-security.png) | ![UFW 20022 및 15034 허용](docs/evidence/04-ufw-rules.png) |
 
 ## 애플리케이션 환경 변수
 
@@ -439,10 +438,10 @@ bash /mission/scripts/start-agent-background.sh
 
 등록된 crontab과 대기 전후 `monitor.log` 줄 수가 증가한 결과입니다.
 
-![cron 등록 및 monitor.log 자동 증가](docs/evidence/cron.png)
+![cron 등록 및 monitor.log 자동 증가](docs/evidence/10-cron-log-growth.png)
 
 ### logrotate 설정 결과
 
 `monitor.log`가 10MB 이상일 때 회전하고 이전 로그를 최대 10개 보관하도록 설정한 결과입니다.
 
-![monitor.log logrotate 설정](docs/evidence/logrotate.png)
+![monitor.log logrotate 설정](docs/evidence/11-logrotate-policy.png)
