@@ -79,6 +79,21 @@ monitor.log 누적 기록
 │   └── agent-app-linux-arm64
 ├── config/
 │   └── agent-app.logrotate
+├── docs/
+│   └── evidence/
+│       ├── docker-build.png
+│       ├── setup.png
+│       ├── agent-admin.png
+│       ├── agent-dev.png
+│       ├── agent-test.png
+│       ├── ssh-port.png
+│       ├── ufw-setting.png
+│       ├── start-agent.png
+│       ├── background-verify.png
+│       ├── monitor.png
+│       ├── cron.png
+│       ├── stop-monitor.png
+│       └── logrotate.png
 ├── scripts/
 │   ├── container-entrypoint.sh
 │   ├── setup.sh
@@ -105,6 +120,12 @@ Ubuntu 22.04를 기반으로 프로젝트 실행에 필요한 패키지를 설�
 - `acl`: 사용자·그룹별 세부 권한 관리
 - `logrotate`: 로그 회전 및 보관
 - `sudo`, `procps`, `iproute2`: 권한 전환과 프로세스·포트 확인
+
+### Docker 이미지 빌드 결과
+
+Dockerfile을 기준으로 Ubuntu 22.04 이미지가 빌드되고, Compose를 통해 `agent-linux` 컨테이너가 생성된 결과입니다.
+
+![Docker 이미지 빌드 및 컨테이너 생성](docs/evidence/docker-build.png)
 
 ### `docker-compose.yml`
 
@@ -164,6 +185,12 @@ Dockerfile로 만든 이미지를 실제 컨테이너로 실행합니다.
 
 `set -euo pipefail`을 사용하여 명령 실패, 정의되지 않은 변수, 파이프라인 오류가 발생하면 설정을 중단합니다.
 
+### 초기 환경 구성 결과
+
+계정·그룹·디렉토리·키·로그·SSH·UFW·cron 설정이 순서대로 완료된 결과입니다.
+
+![setup.sh 실행 결과](docs/evidence/setup.png)
+
 ### `start-agent.sh`
 
 환경 변수를 지정하고 `agent-app`을 포그라운드로 실행합니다.
@@ -181,6 +208,12 @@ Dockerfile로 만든 이미지를 실제 컨테이너로 실행합니다.
 - `exec`를 사용하여 셸 프로세스를 애플리케이션 프로세스로 교체
 
 포그라운드 실행이므로 애플리케이션의 Boot Sequence를 터미널에서 바로 확인할 수 있습니다.
+
+### 애플리케이션 시작 결과
+
+실행 계정, 환경 변수, 키, 포트, 로그 디렉토리 검사를 모두 통과한 뒤 `Agent READY` 상태로 진입한 결과입니다.
+
+![agent-app Boot Sequence 및 Agent READY](docs/evidence/start-agent.png)
 
 ### `start-agent-background.sh`
 
@@ -240,6 +273,12 @@ Dockerfile로 만든 이미지를 실제 컨테이너로 실행합니다.
 
 마지막에 성공과 실패 개수를 요약하고, 실패 항목이 있으면 비정상 종료합니다.
 
+### 백그라운드 실행 및 전체 검증 결과
+
+애플리케이션을 백그라운드로 실행한 뒤 계정·SSH·UFW·파일 권한·cron·프로세스·포트 상태를 검사한 결과입니다.
+
+![백그라운드 실행 및 verify.sh 검증 결과](docs/evidence/background-verify.png)
+
 ## `src/monitor.sh`
 
 애플리케이션과 시스템 상태를 확인하고 결과를 로그에 기록하는 핵심 모니터링 스크립트입니다.
@@ -272,6 +311,18 @@ Dockerfile로 만든 이미지를 실제 컨테이너로 실행합니다.
 [YYYY-MM-DD HH:MM:SS] PID:값 CPU:값% MEM:값% DISK_USED:값%
 ```
 
+### 모니터링 실행 결과
+
+프로세스·포트·UFW 상태를 확인하고 CPU·메모리·디스크 사용률을 수집하여 `monitor.log`에 누적한 결과입니다.
+
+![monitor.sh 정상 실행 및 로그 누적](docs/evidence/monitor.png)
+
+### 장애 감지 결과
+
+`agent-app`을 중지한 상태에서 모니터를 실행하여 프로세스 장애를 감지하고 종료 코드 `1`을 반환한 결과입니다.
+
+![agent-app 중지 후 monitor.sh 장애 감지](docs/evidence/stop-monitor.png)
+
 ## 계정 및 권한 구조
 
 | 계정 | 소속 그룹 | 역할 |
@@ -289,6 +340,20 @@ Dockerfile로 만든 이미지를 실제 컨테이너로 실행합니다.
 | `monitor.sh` | `agent-dev:agent-core` | `750` | 개발 계정 소유, 운영 계정 실행 |
 
 디렉토리 권한의 `2`는 setgid 비트입니다. 하위에 생성되는 파일과 디렉토리가 상위 디렉토리의 그룹을 유지하도록 합니다. 기본 ACL도 함께 적용하여 새 파일에서도 접근 정책이 이어지도록 했습니다.
+
+### 계정별 그룹 구성 결과
+
+| `agent-admin` | `agent-dev` | `agent-test` |
+|---|---|---|
+| ![agent-admin 그룹 구성](docs/evidence/agent-admin.png) | ![agent-dev 그룹 구성](docs/evidence/agent-dev.png) | ![agent-test 그룹 구성](docs/evidence/agent-test.png) |
+
+`agent-admin`과 `agent-dev`는 `agent-core`에 포함되며, `agent-test`는 공용 업로드 영역에 필요한 `agent-common`에만 포함됩니다.
+
+### SSH 및 방화벽 설정 결과
+
+| SSH 설정 | UFW 설정 |
+|---|---|
+| ![SSH 20022 포트와 Root 로그인 차단](docs/evidence/ssh-port.png) | ![UFW 20022 및 15034 허용](docs/evidence/ufw-setting.png) |
 
 ## 애플리케이션 환경 변수
 
@@ -369,3 +434,15 @@ bash /mission/scripts/start-agent-background.sh
 ```
 
 `monitor.sh`는 `>>` 연산자로 기존 로그 뒤에 결과를 추가합니다. cron은 매분 모니터를 실행하며, 별도의 cron 항목이 5분마다 logrotate 정책을 확인합니다.
+
+### cron 자동 실행 결과
+
+등록된 crontab과 대기 전후 `monitor.log` 줄 수가 증가한 결과입니다.
+
+![cron 등록 및 monitor.log 자동 증가](docs/evidence/cron.png)
+
+### logrotate 설정 결과
+
+`monitor.log`가 10MB 이상일 때 회전하고 이전 로그를 최대 10개 보관하도록 설정한 결과입니다.
+
+![monitor.log logrotate 설정](docs/evidence/logrotate.png)
